@@ -1,121 +1,796 @@
-#include <iostream>
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
+#include <iostream>
+#include <vector>
+#include <cmath>
+#include <string>
+#include <algorithm>
+#include "shaderClass.h"
+#include "VAO.h"
+#include "VBO.h"
 
-const char* vertexShaderSource = "#version 330 core\n"
-"layout (location = 0) in vec3 aPos;\n"
-"void main()\n"
-"{\n"
-"   gl_Position = vec4(aPos.x, aPos.y, aPos.z, 1.0);\n"
-"}\0";
+// Inclusión de Dear ImGui
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
 
-const char* fragmentShaderSource = "#version 330 core\n"
-"out vec4 FragColor;\n"
-"void main()\n"
-"{\n"
-"   FragColor = vec4(1.0f, 0.84f, 0.0f, 1.0f);\n"
-"}\n\0";
+// ============================================================================
+// CONFIGURACIÓN DE LA GRILLA
+// ============================================================================
+const int COLUMNAS = 50;
+const int FILAS = 35;
+const int TAMANO_CELDA = 15;
+const int ANCHO_VENTANA = COLUMNAS * TAMANO_CELDA;
+const int ALTO_VENTANA = FILAS * TAMANO_CELDA;
 
-int main() 
+// ============================================================================
+// ESTADOS Y VARIABLES DE DIBUJO
+// ============================================================================
+float colorPincel[3] = { 0.9f, 0.2f, 0.2f };
+bool modoBorrar = false;
+
+enum Herramienta
 {
-	glfwInit(); //librería para ventanas.
+    PINCEL,
+    LINEA,
+    CIRCULO
+};
 
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3); // Solo pone la version de opengl que usamos
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3); 
-	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+Herramienta herramientaActual = PINCEL;
+bool esperandoSegundoPunto = false;
+int primerX = 0;
+int primerY = 0;
 
-	// Creamos la ventana, le ponemos tamaño y si es fullscreen o no y tal.
-	GLFWwindow* window = glfwCreateWindow(800, 800, "Ventana", NULL, NULL);
+// ============================================================================
+// MATRICES QUE REPRESENTAN LA GRILLA
+// ============================================================================
+std::vector<std::vector<bool>> grilla(
+    FILAS, std::vector<bool>(COLUMNAS, false)
+);
 
-	if (window == NULL) // Si hubo un error y la ventana no se pudo crear
-	{
-		std::cout << "No se pudo crear la ventana" << std::endl; 
-		glfwTerminate(); // Apagamos la librería de ventanas.
-		return -1; 
-	}
-	glfwMakeContextCurrent(window); 
+std::vector<std::vector<bool>> grillaFiguras(
+    FILAS, std::vector<bool>(COLUMNAS, false)
+);
 
-	gladLoadGL(); 
+// ============================================================================
+// ESTRUCTURA PARA GUARDAR CADA FIGURA Y SU TRANSFORMACIÓN
+// ============================================================================
+struct Figura
+{
+    int tipo; // 0 = línea, 1 = círculo
+    int x1, y1, x2, y2;
+    float moverX;
+    float moverY;
+    float escala;
+    float angulo;
+};
 
-	glViewport(0, 0, 800, 800); // Le decimos a la gráfica qué pedazo de la ventana usar 
+std::vector<Figura> figuras;
+int figuraSeleccionada = -1;
 
-	GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER); 
-	glShaderSource(vertexShader, 1, &vertexShaderSource, NULL); 
-	glCompileShader(vertexShader); 
+// ============================================================================
+// FUNCIÓN AUXILIAR PARA ACTIVAR O DESACTIVAR UNA CELDA
+// ============================================================================
+void marcarCelda(int x, int y, bool activar)
+{
+    if (x >= 0 && x < COLUMNAS && y >= 0 && y < FILAS)
+    {
+        grilla[y][x] = activar;
+    }
+}
 
-	GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER); 
-	glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL); // color
-	glCompileShader(fragmentShader); 
+void marcarCeldaFigura(int x, int y)
+{
+    if (x >= 0 && x < COLUMNAS && y >= 0 && y < FILAS)
+    {
+        grillaFiguras[y][x] = true;
+    }
+}
 
-	GLuint shaderProgram = glCreateProgram(); //aca se juntan los fragments y vertices.
-	glAttachShader(shaderProgram, vertexShader); 
-	glAttachShader(shaderProgram, fragmentShader); // Le pegamos el color.
-	glLinkProgram(shaderProgram); 
+// ============================================================================
+// ALGORITMO DE BRESENHAM PARA LÍNEAS
+// ============================================================================
+void calcularLineaBresenham(int x0, int y0, int x1, int y1)
+{
+    int dx = std::abs(x1 - x0);
+    int dy = std::abs(y1 - y0);
 
-	glDeleteShader(vertexShader); // Borramos el ocupar memoria.
-	glDeleteShader(fragmentShader); 
+    int sx = (x0 < x1) ? 1 : -1;
+    int sy = (y0 < y1) ? 1 : -1;
 
-	
-	GLfloat vertices[] = // Aquí hacemos una lista con los 4 puntos (esquinas) de nuestro cuadrado.
-	{
-		 0.5f,  0.5f, 0.0f, // Arriba a la derecha (Índice 0)
-		 0.5f, -0.5f, 0.0f, // Abajo a la derecha (Índice 1)
-		-0.5f, -0.5f, 0.0f, // Abajo a la izquierda (Índice 2)
-		-0.5f,  0.5f, 0.0f  // Arriba a la izquierda (Índice 3)
-	};
+    int err = dx - dy;
 
-	
-	GLuint indices[] = // La gráfica solo dibuja triángulos. Aquí le decimos cómo unir los puntos de arriba.
-	{
-		0, 1, 3, // Primer triángulo (mitad derecha superior del cuadrado)
-		1, 2, 3  // Segundo triángulo (mitad izquierda inferior del cuadrado)
-	};
+    while (true)
+    {
+        marcarCelda(x0, y0, true);
 
-	GLuint VAO, VBO, EBO; // Creamos 3 "cajas" para guardar datos en la tarjeta gráfica.
+        if (x0 == x1 && y0 == y1) break;
 
-	glGenVertexArrays(1, &VAO); // Creamos la caja VAO (guarda TODA la configuración del dibujo).
-	glGenBuffers(1, &VBO); // Creamos la caja VBO (guarda las coordenadas de las esquinas).
-	glGenBuffers(1, &EBO); // Creamos la caja EBO (guarda el orden para hacer los triángulos).
+        int e2 = 2 * err;
+        if (e2 > -dy)
+        {
+            err -= dy;
+            x0 += sx;
+        }
+        if (e2 < dx)
+        {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
 
-	glBindVertexArray(VAO); 
+// ============================================================================
+// DIBUJA LOS 8 PUNTOS SIMÉTRICOS DEL CÍRCULO
+// ============================================================================
+void dibujarPuntosCirculo(int xc, int yc, int x, int y)
+{
+    marcarCelda(xc + x, yc + y, true);
+    marcarCelda(xc - x, yc + y, true);
+    marcarCelda(xc + x, yc - y, true);
+    marcarCelda(xc - x, yc - y, true);
+    marcarCelda(xc + y, yc + x, true);
+    marcarCelda(xc - y, yc + x, true);
+    marcarCelda(xc + y, yc - x, true);
+    marcarCelda(xc - y, yc - x, true);
+}
 
-	glBindBuffer(GL_ARRAY_BUFFER, VBO); 
-	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW); // Metemos nuestras esquinas adentro.
+// ============================================================================
+// ALGORITMO DE BRESENHAM PARA CÍRCULOS
+// ============================================================================
+void calcularCirculoBresenham(int xc, int yc, int radio)
+{
+    int x = 0;
+    int y = radio;
+    int d = 3 - (2 * radio);
 
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO); 
-	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW); // Metemos el orden de los triángulos adentro.
+    while (x <= y)
+    {
+        dibujarPuntosCirculo(xc, yc, x, y);
 
-	// Le explicamos a la gráfica cómo entender las esquinas, es una vaina ahi rara de 3 en 3 para las coordenadas X, Y, Z).
-	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-	glEnableVertexAttribArray(0); 
+        if (d < 0)
+        {
+            d = d + (4 * x) + 6;
+        }
+        else
+        {
+            d = d + 4 * (x - y) + 10;
+            y--;
+        }
+        x++;
+    }
+}
 
-	glBindBuffer(GL_ARRAY_BUFFER, 0); 
-	glBindVertexArray(0); 
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0); 
+// ============================================================================
+// CONVERSIÓN A COORDENADAS NORMALIZADAS (NDC)
+// ============================================================================
+void transformarACoordenadasNDC(float x, float y, float& ndcX, float& ndcY)
+{
+    ndcX = (x / ANCHO_VENTANA) * 2.0f - 1.0f;
+    ndcY = (y / ALTO_VENTANA) * 2.0f - 1.0f;
+}
 
-	//while para mantener la imagen en la pantalla
-	while (!glfwWindowShouldClose(window))
-	{
-		glClearColor(0.07f, 0.13f, 0.17f, 1.0f); //color de fondo
-		glClear(GL_COLOR_BUFFER_BIT); //le pone el color a la pantalla
+// ============================================================================
+// APLICA LA MATRIZ DE TRANSFORMACIÓN 2D A UN PUNTO
+// Incluye traslación, escalamiento y rotación usando seno y coseno.
+// La transformación se realiza respecto al centro original de la figura.
+// ============================================================================
+void transformarPunto(float x, float y, float centroX, float centroY,
+    const Figura& figura, float& nuevoX, float& nuevoY)
+{
+    float radianes = figura.angulo * 3.14159265f / 180.0f;
 
-		glUseProgram(shaderProgram);
-		glBindVertexArray(VAO);
+    float coseno = std::cos(radianes);
+    float seno = std::sin(radianes);
 
-		
-		glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0); // aqui dibuja los triangulos en 6 puntos de orden.
-	
-		glfwSwapBuffers(window); 
-		glfwPollEvents(); 
-	}
-	//limpiamos la memoria:
-	glDeleteVertexArrays(1, &VAO); 
-	glDeleteBuffers(1, &VBO); 
-	glDeleteBuffers(1, &EBO); 
-	glDeleteProgram(shaderProgram);
+    float dx = (x - centroX) * figura.escala;
+    float dy = (y - centroY) * figura.escala;
 
-	glfwDestroyWindow(window); 
-	glfwTerminate();
+    // Matriz de rotación y escalamiento
+    float rotadoX = dx * coseno - dy * seno;
+    float rotadoY = dx * seno + dy * coseno;
 
-	return 0; 
+    nuevoX = centroX + rotadoX + figura.moverX;
+    nuevoY = centroY + rotadoY + figura.moverY;
+}
+
+// ============================================================================
+// GENERA NUEVAMENTE LA GRILLA DE FIGURAS APLICANDO SUS TRANSFORMACIONES
+// ============================================================================
+void actualizarFiguras()
+{
+    for (int y = 0; y < FILAS; y++)
+        for (int x = 0; x < COLUMNAS; x++)
+            grillaFiguras[y][x] = false;
+
+    for (int i = 0; i < (int)figuras.size(); i++)
+    {
+        Figura f = figuras[i];
+
+        float centroX;
+        float centroY;
+
+        if (f.tipo == 0)
+        {
+            centroX = (f.x1 + f.x2) / 2.0f;
+            centroY = (f.y1 + f.y2) / 2.0f;
+        }
+        else
+        {
+            centroX = (float)f.x1;
+            centroY = (float)f.y1;
+        }
+
+        // Se dibuja primero la figura original en una grilla temporal.
+        std::vector<std::vector<bool>> temporal(
+            FILAS, std::vector<bool>(COLUMNAS, false)
+        );
+
+        if (f.tipo == 0)
+        {
+            int x0 = f.x1;
+            int y0 = f.y1;
+            int x1 = f.x2;
+            int y1 = f.y2;
+
+            int dx = std::abs(x1 - x0);
+            int dy = std::abs(y1 - y0);
+            int sx = (x0 < x1) ? 1 : -1;
+            int sy = (y0 < y1) ? 1 : -1;
+            int err = dx - dy;
+
+            while (true)
+            {
+                if (x0 >= 0 && x0 < COLUMNAS && y0 >= 0 && y0 < FILAS)
+                    temporal[y0][x0] = true;
+
+                if (x0 == x1 && y0 == y1) break;
+
+                int e2 = 2 * err;
+                if (e2 > -dy)
+                {
+                    err -= dy;
+                    x0 += sx;
+                }
+                if (e2 < dx)
+                {
+                    err += dx;
+                    y0 += sy;
+                }
+            }
+        }
+        else
+        {
+            int radio = (int)std::round(std::sqrt(
+                (f.x2 - f.x1) * (f.x2 - f.x1) +
+                (f.y2 - f.y1) * (f.y2 - f.y1)
+            ));
+
+            int x = 0;
+            int y = radio;
+            int d = 3 - (2 * radio);
+
+            while (x <= y)
+            {
+                int puntosX[8] = {
+                    f.x1 + x, f.x1 - x, f.x1 + x, f.x1 - x,
+                    f.x1 + y, f.x1 - y, f.x1 + y, f.x1 - y
+                };
+                int puntosY[8] = {
+                    f.y1 + y, f.y1 + y, f.y1 - y, f.y1 - y,
+                    f.y1 + x, f.y1 + x, f.y1 - x, f.y1 - x
+                };
+
+                for (int p = 0; p < 8; p++)
+                {
+                    if (puntosX[p] >= 0 && puntosX[p] < COLUMNAS &&
+                        puntosY[p] >= 0 && puntosY[p] < FILAS)
+                        temporal[puntosY[p]][puntosX[p]] = true;
+                }
+
+                if (d < 0)
+                    d = d + (4 * x) + 6;
+                else
+                {
+                    d = d + 4 * (x - y) + 10;
+                    y--;
+                }
+                x++;
+            }
+        }
+
+        // Cada píxel original se transforma con la matriz 2D.
+        for (int y = 0; y < FILAS; y++)
+        {
+            for (int x = 0; x < COLUMNAS; x++)
+            {
+                if (temporal[y][x])
+                {
+                    float tx, ty;
+                    transformarPunto((float)x, (float)y, centroX, centroY,
+                        f, tx, ty);
+
+                    int finalX = (int)std::round(tx);
+                    int finalY = (int)std::round(ty);
+                    marcarCeldaFigura(finalX, finalY);
+                }
+            }
+        }
+    }
+}
+
+
+
+
+
+// ============================================================================
+// FUNCIÓN PRINCIPAL
+// ============================================================================
+int main()
+{
+    if (!glfwInit())
+    {
+        std::cout << "Error al inicializar GLFW\n";
+        return -1;
+    }
+
+    GLFWwindow* ventana = glfwCreateWindow(
+        ANCHO_VENTANA,
+        ALTO_VENTANA,
+        "Paint Grilla con Bresenham e ImGui",
+        NULL,
+        NULL
+    );
+
+    if (!ventana)
+    {
+        std::cout << "Error al crear ventana\n";
+        glfwTerminate();
+        return -1;
+    }
+
+    glfwMakeContextCurrent(ventana);
+    glfwSwapInterval(1);
+
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
+    {
+        std::cout << "Error al cargar GLAD\n";
+        glfwTerminate();
+        return -1;
+    }
+
+    // --- INICIALIZAR DEAR IMGUI ---
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    ImGui::StyleColorsDark();
+
+    ImGui_ImplGlfw_InitForOpenGL(ventana, true);
+    ImGui_ImplOpenGL3_Init("#version 330 core");
+
+    // Figuras iniciales del programa original
+    calcularCirculoBresenham(25, 25, 6);
+    calcularLineaBresenham(5, 2, 44, 14);
+
+    bool mousePresionadoAnterior = false;
+    Shader* shaderProgram = nullptr;
+    VAO* vaoGrilla = nullptr;
+    VBO* vboGrilla = nullptr;
+    while (!glfwWindowShouldClose(ventana))
+    {
+        glfwPollEvents();
+
+        // --- INICIAR FRAME DE IMGUI ---
+
+
+
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
+        // --- CREAR VENTANA DE CONTROL IMGUI ---
+        ImGui::Begin("Panel de Control - Paint");
+
+        ImGui::Text("Herramientas de dibujo");
+
+        if (ImGui::Button("Pincel"))
+        {
+            herramientaActual = PINCEL;
+            esperandoSegundoPunto = false;
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Linea"))
+        {
+            herramientaActual = LINEA;
+            esperandoSegundoPunto = false;
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Circulo"))
+        {
+            herramientaActual = CIRCULO;
+            esperandoSegundoPunto = false;
+        }
+
+        ImGui::Separator();
+
+        ImGui::Checkbox("Modo Borrador", &modoBorrar);
+        ImGui::ColorEdit3("Color del Pincel", colorPincel);
+
+        if (herramientaActual == PINCEL)
+            ImGui::Text("Herramienta actual: Pincel");
+        else if (herramientaActual == LINEA)
+            ImGui::Text("Herramienta actual: Linea");
+        else
+            ImGui::Text("Herramienta actual: Circulo");
+
+        if (esperandoSegundoPunto)
+            ImGui::Text("Seleccione el segundo punto en la grilla");
+
+        ImGui::Separator();
+        ImGui::Text("Transformaciones de figuras");
+
+        if (figuras.empty())
+        {
+            ImGui::Text("Todavia no hay figuras creadas");
+        }
+        else
+        {
+            if (figuraSeleccionada < 0 ||
+                figuraSeleccionada >= (int)figuras.size())
+                figuraSeleccionada = 0;
+
+            std::vector<std::string> nombres;
+            for (int i = 0; i < (int)figuras.size(); i++)
+            {
+                std::string nombre = "Figura " + std::to_string(i + 1);
+                if (figuras[i].tipo == 0)
+                    nombre += " (Linea)";
+                else
+                    nombre += " (Circulo)";
+                nombres.push_back(nombre);
+            }
+
+            if (ImGui::BeginCombo("Seleccionar figura",
+                nombres[figuraSeleccionada].c_str()))
+            {
+                for (int i = 0; i < (int)nombres.size(); i++)
+                {
+                    bool seleccionada = (figuraSeleccionada == i);
+                    if (ImGui::Selectable(nombres[i].c_str(), seleccionada))
+                        figuraSeleccionada = i;
+
+                    if (seleccionada)
+                        ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+
+            Figura& f = figuras[figuraSeleccionada];
+
+            ImGui::SliderFloat("Mover X", &f.moverX, -25.0f, 25.0f);
+            ImGui::SliderFloat("Mover Y", &f.moverY, -25.0f, 25.0f);
+            ImGui::SliderFloat("Escala", &f.escala, 0.2f, 3.0f);
+            ImGui::SliderFloat("Rotacion (grados)", &f.angulo, -180.0f, 180.0f);
+
+            if (ImGui::Button("Restablecer transformacion"))
+            {
+                f.moverX = 0.0f;
+                f.moverY = 0.0f;
+                f.escala = 1.0f;
+                f.angulo = 0.0f;
+            }
+
+            ImGui::SameLine();
+            if (ImGui::Button("Eliminar figura"))
+            {
+                figuras.erase(figuras.begin() + figuraSeleccionada);
+                figuraSeleccionada = figuras.empty() ? -1 : 0;
+            }
+        }
+
+        ImGui::Separator();
+
+        if (ImGui::Button("Limpiar Grilla"))
+        {
+            for (int y = 0; y < FILAS; y++)
+                for (int x = 0; x < COLUMNAS; x++)
+                    grilla[y][x] = false;
+
+            figuras.clear();
+            figuraSeleccionada = -1;
+            esperandoSegundoPunto = false;
+        }
+
+        ImGui::Text("FPS: %.1f", io.Framerate);
+        ImGui::End();
+
+        // --- GESTIÓN DEL MOUSE PARA PINTAR O CREAR FIGURAS ---
+        bool mousePresionado =
+            glfwGetMouseButton(ventana, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+
+        // Se trabaja solamente con el primer frame del clic.
+        if (mousePresionado && !mousePresionadoAnterior &&
+            !io.WantCaptureMouse)
+        {
+            double mouseX, mouseY;
+            glfwGetCursorPos(ventana, &mouseX, &mouseY);
+
+            int gx = (int)(mouseX / TAMANO_CELDA);
+            int gy = (int)((ALTO_VENTANA - 1 - mouseY) / TAMANO_CELDA);
+
+            if (gx >= 0 && gx < COLUMNAS && gy >= 0 && gy < FILAS)
+            {
+                if (herramientaActual == PINCEL)
+                {
+                    marcarCelda(gx, gy, !modoBorrar);
+                }
+                else
+                {
+                    if (!esperandoSegundoPunto)
+                    {
+                        primerX = gx;
+                        primerY = gy;
+                        esperandoSegundoPunto = true;
+                    }
+                    else
+                    {
+                        Figura nueva;
+                        nueva.tipo = (herramientaActual == LINEA) ? 0 : 1;
+                        nueva.x1 = primerX;
+                        nueva.y1 = primerY;
+                        nueva.x2 = gx;
+                        nueva.y2 = gy;
+                        nueva.moverX = 0.0f;
+                        nueva.moverY = 0.0f;
+                        nueva.escala = 1.0f;
+                        nueva.angulo = 0.0f;
+
+                        figuras.push_back(nueva);
+                        figuraSeleccionada = (int)figuras.size() - 1;
+                        esperandoSegundoPunto = false;
+                    }
+                }
+            }
+        }
+
+        mousePresionadoAnterior = mousePresionado;
+
+        // Actualizar las figuras para aplicar sus transformaciones
+        actualizarFiguras();
+
+        // Renderizar ImGui
+        ImGui::Render();
+
+        // --- RENDERIZADO OPENGL ---
+        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        std::vector<float> verticesRelleno;
+        std::vector<float> verticesFiguras;
+        std::vector<float> verticesLineas;
+
+        for (int y = 0; y < FILAS; y++)
+        {
+            for (int x = 0; x < COLUMNAS; x++)
+            {
+                float xMinimo = x * TAMANO_CELDA;
+                float yMinimo = y * TAMANO_CELDA;
+                float xMaximo = xMinimo + TAMANO_CELDA;
+                float yMaximo = yMinimo + TAMANO_CELDA;
+
+                float ndcX1, ndcY1, ndcX2, ndcY2;
+                transformarACoordenadasNDC(
+                    xMinimo, yMinimo, ndcX1, ndcY1
+                );
+                transformarACoordenadasNDC(
+                    xMaximo, yMaximo, ndcX2, ndcY2
+                );
+
+                // Celdas pintadas manualmente
+                if (grilla[y][x])
+                {
+                    verticesRelleno.push_back(ndcX1);
+                    verticesRelleno.push_back(ndcY1);
+                    verticesRelleno.push_back(ndcX2);
+                    verticesRelleno.push_back(ndcY1);
+                    verticesRelleno.push_back(ndcX2);
+                    verticesRelleno.push_back(ndcY2);
+
+                    verticesRelleno.push_back(ndcX2);
+                    verticesRelleno.push_back(ndcY2);
+                    verticesRelleno.push_back(ndcX1);
+                    verticesRelleno.push_back(ndcY2);
+                    verticesRelleno.push_back(ndcX1);
+                    verticesRelleno.push_back(ndcY1);
+                }
+
+                // Celdas pertenecientes a líneas y círculos
+                if (grillaFiguras[y][x])
+                {
+                    verticesFiguras.push_back(ndcX1);
+                    verticesFiguras.push_back(ndcY1);
+                    verticesFiguras.push_back(ndcX2);
+                    verticesFiguras.push_back(ndcY1);
+                    verticesFiguras.push_back(ndcX2);
+                    verticesFiguras.push_back(ndcY2);
+
+                    verticesFiguras.push_back(ndcX2);
+                    verticesFiguras.push_back(ndcY2);
+                    verticesFiguras.push_back(ndcX1);
+                    verticesFiguras.push_back(ndcY2);
+                    verticesFiguras.push_back(ndcX1);
+                    verticesFiguras.push_back(ndcY1);
+                }
+
+                // Bordes de las celdas de la grilla
+                verticesLineas.push_back(ndcX1);
+                verticesLineas.push_back(ndcY1);
+                verticesLineas.push_back(ndcX2);
+                verticesLineas.push_back(ndcY1);
+
+                verticesLineas.push_back(ndcX2);
+                verticesLineas.push_back(ndcY1);
+                verticesLineas.push_back(ndcX2);
+                verticesLineas.push_back(ndcY2);
+
+                verticesLineas.push_back(ndcX2);
+                verticesLineas.push_back(ndcY2);
+                verticesLineas.push_back(ndcX1);
+                verticesLineas.push_back(ndcY2);
+
+                verticesLineas.push_back(ndcX1);
+                verticesLineas.push_back(ndcY2);
+                verticesLineas.push_back(ndcX1);
+                verticesLineas.push_back(ndcY1);
+            }
+        }
+
+        // Matriz identidad
+        float matrizTransformacion[16] =
+        {
+            1.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 1.0f
+        };
+
+        if (shaderProgram == nullptr)
+        {
+            shaderProgram = new Shader("Shaders/default.vert", "Shaders/default.frag");
+
+            float dummyVertice[2] = { 0.0f, 0.0f };
+            vaoGrilla = new VAO();
+            vaoGrilla->Bind();
+
+            vboGrilla = new VBO(dummyVertice, sizeof(dummyVertice));
+            vaoGrilla->LinkVBO(*vboGrilla, 0);
+
+            vaoGrilla->Unbind();
+            vboGrilla->Unbind();
+        }
+
+        shaderProgram->Activate();
+        vaoGrilla->Bind();
+        vboGrilla->Bind();
+
+        int ubicacionTransformacion =
+            glGetUniformLocation(shaderProgram->ID, "uTransformacion");
+
+        glUniformMatrix4fv(
+            ubicacionTransformacion, 1, GL_FALSE, matrizTransformacion
+        );
+
+        // 1. Dibuja las celdas del pincel y borrador
+        if (!verticesRelleno.empty())
+        {
+            glBufferData(
+                GL_ARRAY_BUFFER,
+                verticesRelleno.size() * sizeof(float),
+                verticesRelleno.data(),
+                GL_DYNAMIC_DRAW
+            );
+
+            int ubicacionColor =
+                glGetUniformLocation(shaderProgram->ID, "uColor");
+
+            glUniform3f(
+                ubicacionColor,
+                colorPincel[0],
+                colorPincel[1],
+                colorPincel[2]
+            );
+
+            glDrawArrays(
+                GL_TRIANGLES, 0,
+                (GLsizei)(verticesRelleno.size() / 2)
+            );
+        }
+
+        // 2. Dibuja las figuras creadas con Bresenham
+        if (!verticesFiguras.empty())
+        {
+            glBufferData(
+                GL_ARRAY_BUFFER,
+                verticesFiguras.size() * sizeof(float),
+                verticesFiguras.data(),
+                GL_DYNAMIC_DRAW
+            );
+
+            int ubicacionColor =
+                glGetUniformLocation(shaderProgram->ID, "uColor");
+
+            glUniform3f(
+                ubicacionColor,
+                colorPincel[0],
+                colorPincel[1],
+                colorPincel[2]
+            );
+
+            glDrawArrays(
+                GL_TRIANGLES, 0,
+                (GLsizei)(verticesFiguras.size() / 2)
+            );
+        }
+
+        // 3. Dibuja las líneas de la grilla
+        if (!verticesLineas.empty())
+        {
+            glBufferData(
+                GL_ARRAY_BUFFER,
+                verticesLineas.size() * sizeof(float),
+                verticesLineas.data(),
+                GL_DYNAMIC_DRAW
+            );
+
+            int ubicacionColor =
+                glGetUniformLocation(shaderProgram->ID, "uColor");
+
+            glUniform3f(
+                ubicacionColor, 0.25f, 0.25f, 0.25f
+            );
+
+            glDrawArrays(
+                GL_LINES, 0,
+                (GLsizei)(verticesLineas.size() / 2)
+            );
+        }
+
+        vboGrilla->Unbind();
+        vaoGrilla->Unbind();
+
+        // Renderizar los elementos gráficos de ImGui encima de OpenGL
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+        glfwSwapBuffers(ventana);
+    }
+    // --- LIMPIEZA DE OPENGL ---
+    if (vaoGrilla != nullptr)
+    {
+        vaoGrilla->Delete();
+        delete vaoGrilla;
+        vaoGrilla = nullptr;
+    }
+
+    if (vboGrilla != nullptr)
+    {
+        vboGrilla->Delete();
+        delete vboGrilla;
+        vboGrilla = nullptr;
+    }
+
+    if (shaderProgram != nullptr)
+    {
+        shaderProgram->Delete();
+        delete shaderProgram;
+        shaderProgram = nullptr;
+    }
+    // --- LIMPIEZA DE IMGUI ---
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+
+    glfwTerminate();
+    return 0;
 }
