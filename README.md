@@ -1,4 +1,4 @@
-# Paint Grilla 2D con Bresenham e ImGui
+# Paint Grilla 2D con Bresenham y Imgui
 
 Daniel Lopez - 6014394  
 Proyecto: Computación Gráfica (`Main.cpp` + clases OpenGL + Shaders GLSL + Dear ImGui)
