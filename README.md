@@ -1,12 +1,13 @@
-- Paint Grilla 2D con Bresenham y Imgui
+# Paint Grilla 2D con Bresenham e ImGui
 
-Daniel Lopez - 6014394 
-Proyecto: Computación Gráfica (Main.cpp + clases OpenGL + Shaders GLSL + Dear ImGui)
+Daniel Lopez - 6014394  
+Proyecto: Computación Gráfica (`Main.cpp` + clases OpenGL + Shaders GLSL + Dear ImGui)
 
-- Arquitectura del proyecto
+## Arquitectura del proyecto
 
+```text
 Computacion Grafica
-├── Main.cpp                  → Bucle principal, grilla 50x35, Bresenham, transformaciones 2D Y ImGui
+├── Main.cpp                  → Bucle principal, grilla 50x35, Bresenham, transformaciones 2D e ImGui
 ├── Shaders/
 │   ├── default.vert          → Vertex shader (transformación de vértices con uTransformacion)
 │   └── default.frag          → Fragment shader (color uniforme con uColor)
